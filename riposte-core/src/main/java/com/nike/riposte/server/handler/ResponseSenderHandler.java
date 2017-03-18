@@ -47,7 +47,7 @@ public class ResponseSenderHandler extends BaseInboundHandlerWithTracingAndMdcSu
         this.responseSender = responseSender;
     }
 
-    protected void sendResponse(ChannelHandlerContext ctx, Object msg) throws JsonProcessingException {
+    protected void sendResponse(ChannelHandlerContext ctx, Object msg) throws Exception {
         try {
             HttpProcessingState state = ChannelAttributes.getHttpProcessingStateForChannel(ctx).get();
             if (state.isResponseSendingLastChunkSent()) {
@@ -66,13 +66,10 @@ public class ResponseSenderHandler extends BaseInboundHandlerWithTracingAndMdcSu
                 requestInfo = RequestInfoImpl.dummyInstanceForUnknownRequests();
             ResponseInfo<?> responseInfo = state.getResponseInfo();
             Endpoint<?> endpointExecuted = state.getEndpointForExecution();
-            ObjectMapper customSerializer = (endpointExecuted == null)
-                                            ? null
-                                            : endpointExecuted.customResponseContentSerializer(requestInfo);
 
             if (msg != null && msg instanceof ChunkedOutboundMessage) {
                 // Chunked message. Stream it out.
-                responseSender.sendResponseChunk(ctx, requestInfo, responseInfo, (ChunkedOutboundMessage) msg);
+                responseSender.sendResponseChunk(ctx, requestInfo, responseInfo, msg);
             }
             else {
                 // Full message. Send it.
@@ -81,7 +78,7 @@ public class ResponseSenderHandler extends BaseInboundHandlerWithTracingAndMdcSu
                     responseSender.sendErrorResponse(ctx, requestInfo, (ResponseInfo<ErrorResponseBody>) responseInfo);
                 }
                 else
-                    responseSender.sendFullResponse(ctx, requestInfo, responseInfo, customSerializer);
+                    responseSender.sendFullResponse(ctx, requestInfo, responseInfo);
             }
         }
         catch (Throwable t) {

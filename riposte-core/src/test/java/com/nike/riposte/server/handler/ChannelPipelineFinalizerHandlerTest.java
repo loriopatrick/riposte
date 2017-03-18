@@ -229,7 +229,7 @@ public class ChannelPipelineFinalizerHandlerTest {
     }
 
     @Test
-    public void finalizeChannelPipeline_should_send_error_response_if_state_indicates_no_response_already_sent() throws JsonProcessingException {
+    public void finalizeChannelPipeline_should_send_error_response_if_state_indicates_no_response_already_sent() throws Exception {
         // given
         state.setResponseWriterFinalChunkChannelFuture(null);
         HttpProcessingState stateSpy = spy(state);
@@ -254,7 +254,7 @@ public class ChannelPipelineFinalizerHandlerTest {
 
     @Test
     public void finalizeChannelPipeline_should_add_idle_channel_timeout_handler_first_in_pipeline_if_workerChannelIdleTimeoutMillis_is_greater_than_0()
-        throws JsonProcessingException {
+            throws Exception {
         // given
         LastOutboundMessage msg = mock(LastOutboundMessage.class);
 
@@ -277,7 +277,7 @@ public class ChannelPipelineFinalizerHandlerTest {
     }, splitBy = "\\|")
     @Test
     public void finalizeChannelPipeline_does_not_add_idle_channel_timeout_handler_to_pipeline_if_workerChannelIdleTimeoutMillis_is_not_greater_than_0(long timeoutVal)
-        throws JsonProcessingException {
+            throws Exception {
         // given
         Whitebox.setInternalState(handler, "workerChannelIdleTimeoutMillis", timeoutVal);
         LastOutboundMessage msg = mock(LastOutboundMessage.class);

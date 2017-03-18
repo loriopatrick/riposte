@@ -1,7 +1,9 @@
 package com.nike.riposte.server.http;
 
+import com.fasterxml.jackson.core.JsonParseException;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nike.riposte.server.channelpipeline.ChannelAttributes;
-import com.nike.riposte.server.channelpipeline.message.ChunkedOutboundMessage;
 import com.nike.riposte.server.channelpipeline.message.OutboundMessageSendContentChunk;
 import com.nike.riposte.server.channelpipeline.message.OutboundMessageSendHeadersChunkFromResponseInfo;
 import com.nike.riposte.server.error.handler.ErrorResponseBody;
@@ -12,10 +14,12 @@ import com.nike.wingtips.Span;
 import com.nike.wingtips.TraceAndSpanIdGenerator;
 import com.nike.wingtips.TraceHeaders;
 import com.nike.wingtips.Tracer;
-
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,50 +27,15 @@ import java.nio.charset.Charset;
 import java.util.UUID;
 import java.util.function.Consumer;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.DefaultHttpResponse;
-import io.netty.handler.codec.http.HttpContent;
-import io.netty.handler.codec.http.HttpHeaders;
-import io.netty.handler.codec.http.HttpMessage;
-import io.netty.handler.codec.http.HttpObject;
-import io.netty.handler.codec.http.HttpResponse;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.LastHttpContent;
-import io.netty.handler.codec.http.cookie.Cookie;
-import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
-
-import static com.nike.riposte.util.AsyncNettyHelper.consumerWithTracingAndMdc;
-import static com.nike.riposte.util.AsyncNettyHelper.runnableWithTracingAndMdc;
-import static com.nike.riposte.util.AsyncNettyHelper.supplierWithTracingAndMdc;
-import static io.netty.handler.codec.http.HttpHeaders.Names.CONNECTION;
-import static io.netty.handler.codec.http.HttpHeaders.Names.CONTENT_LENGTH;
-import static io.netty.handler.codec.http.HttpHeaders.Names.CONTENT_TYPE;
-import static io.netty.handler.codec.http.HttpHeaders.Names.TRANSFER_ENCODING;
+import static com.nike.riposte.util.AsyncNettyHelper.*;
+import static io.netty.handler.codec.http.HttpHeaders.Names.*;
 import static io.netty.handler.codec.http.HttpHeaders.Values.CHUNKED;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 /**
- * Responsible for sending the response to the client. Will populate a {@link TraceHeaders#TRACE_ID} trace header for
- * all outgoing responses, correctly serializes and sends response body content (along with all the appropriate
- * content-related headers such as {@link io.netty.handler.codec.http.HttpHeaders.Names#CONTENT_TYPE}), and correctly
- * handles keep-alive connections. Contains methods for both full responses and chunked responses.
- * <p/>
- * Non-error full responses should call {@link #sendFullResponse(io.netty.channel.ChannelHandlerContext, RequestInfo,
- * ResponseInfo)} or {@link #sendFullResponse(io.netty.channel.ChannelHandlerContext, RequestInfo, ResponseInfo,
- * com.fasterxml.jackson.databind.ObjectMapper)}. Error responses should call {@link
- * #sendErrorResponse(io.netty.channel.ChannelHandlerContext, RequestInfo, ResponseInfo)}. Chunked responses should call
- * {@link #sendResponseChunk(ChannelHandlerContext, RequestInfo, ResponseInfo, ChunkedOutboundMessage)}.
- *
- * @author Nic Munroe
+ * @author plorio
  */
-@SuppressWarnings("WeakerAccess")
-public class ResponseSender {
-
+public class StandardResponseSender implements ResponseSender {
     private final Logger logger = LoggerFactory.getLogger(this.getClass());
     private final ObjectMapper defaultResponseContentSerializer;
     private final ErrorResponseBodySerializer errorResponseBodySerializer;
@@ -74,33 +43,34 @@ public class ResponseSender {
     public static final int DEFAULT_HTTP_STATUS_CODE = HttpResponseStatus.OK.code();
 
     private static final String HORRIBLE_EXPLOSION_DEFAULT_RESPONSE =
-        "{\"error_id\":\"%UUID%\",\"errors\":[{\"code\":10,\"message\":\"An error occurred while fulfilling the request\"}]}";
+            "{\"error_id\":\"%UUID%\",\"errors\":[{\"code\":10,\"message\":\"An error occurred while fulfilling the request\"}]}";
 
     private final Consumer<ChannelFuture> logOnWriteErrorConsumer = (channelFuture) -> logger
-        .error("An error occurred while writing/sending the response to the remote peer.", channelFuture.cause());
+            .error("An error occurred while writing/sending the response to the remote peer.", channelFuture.cause());
 
     private ChannelFutureListener logOnWriteErrorOperationListener(ChannelHandlerContext ctx) {
         Consumer<ChannelFuture> errorLoggerConsumerWithTracingAndMdc = consumerWithTracingAndMdc(
-            logOnWriteErrorConsumer, ctx
+                logOnWriteErrorConsumer, ctx
         );
 
         return channelFuture -> {
-            if (!channelFuture.isSuccess())
+            if (!channelFuture.isSuccess()) {
                 errorLoggerConsumerWithTracingAndMdc.accept(channelFuture);
+            }
         };
     }
 
-    public ResponseSender(ObjectMapper defaultResponseContentSerializer,
-                          ErrorResponseBodySerializer errorResponseBodySerializer) {
+    public StandardResponseSender(ObjectMapper defaultResponseContentSerializer,
+                                  ErrorResponseBodySerializer errorResponseBodySerializer) {
         if (defaultResponseContentSerializer == null) {
             logger.info("No defaultResponseContentSerializer specified - using a new no-arg ObjectMapper as the "
-                        + "default response serializer");
+                    + "default response serializer");
             defaultResponseContentSerializer = new ObjectMapper();
         }
 
         if (errorResponseBodySerializer == null) {
             logger.info("No errorResponseBodySerializer specified - using "
-                        + "ErrorContractSerializerHelper.SMART_ERROR_SERIALIZER as the default response serializer");
+                    + "ErrorContractSerializerHelper.SMART_ERROR_SERIALIZER as the default response serializer");
             errorResponseBodySerializer = ErrorContractSerializerHelper.SMART_ERROR_SERIALIZER;
         }
 
@@ -110,26 +80,27 @@ public class ResponseSender {
 
     protected String serializeOutput(Object output, ObjectMapper serializer, ResponseInfo<?> responseInfo,
                                      ChannelHandlerContext ctx) {
-        if (output instanceof CharSequence)
+        if (output instanceof CharSequence) {
             return output.toString();
+        }
 
-        if (serializer == null)
+        if (serializer == null) {
             serializer = defaultResponseContentSerializer;
+        }
 
         try {
             return serializer.writeValueAsString(output);
-        }
-        catch (JsonProcessingException e) {
+        } catch (JsonProcessingException e) {
             // Something blew up trying to serialize the output.
             // Log what went wrong, set the error_uid response header, then return a default error response string.
             String errorUid = UUID.randomUUID().toString();
             runnableWithTracingAndMdc(
-                () -> logger.error(
-                    "The output could not be serialized. A default error response will be used instead. "
-                    + "error_uid={}, unserializable_class={}",
-                    errorUid, output.getClass().getName(), e
-                ),
-                ctx
+                    () -> logger.error(
+                            "The output could not be serialized. A default error response will be used instead. "
+                                    + "error_uid={}, unserializable_class={}",
+                            errorUid, output.getClass().getName(), e
+                    ),
+                    ctx
             ).run();
             responseInfo.getHeaders().set("error_uid", errorUid);
             return HORRIBLE_EXPLOSION_DEFAULT_RESPONSE.replace("%UUID%", errorUid);
@@ -159,22 +130,23 @@ public class ResponseSender {
      * Similarly if it is *not* the first chunk, then msg must be a {@link OutboundMessageSendContentChunk} or else an
      * {@link IllegalStateException} will be thrown.
      */
+    @Override
     public void sendResponseChunk(ChannelHandlerContext ctx, RequestInfo<?> requestInfo, ResponseInfo<?> responseInfo,
-                                  ChunkedOutboundMessage msg) {
+                                  Object msg) {
         if (!responseInfo.isChunkedResponse()) {
             throw new IllegalArgumentException(
-                "sendResponseChunk() should only be passed a ResponseInfo where ResponseInfo.isChunkedResponse() is "
-                + "true. This time it was passed one where isChunkedResponse() was false, indicating a full "
-                + "(not chunked) response.");
+                    "sendResponseChunk() should only be passed a ResponseInfo where ResponseInfo.isChunkedResponse() is "
+                            + "true. This time it was passed one where isChunkedResponse() was false, indicating a full "
+                            + "(not chunked) response.");
         }
 
         if (responseInfo.isResponseSendingLastChunkSent()) {
             runnableWithTracingAndMdc(
-                () -> logger.error(
-                    "The last response chunk has already been sent. This method should not have been called. Ignoring this method call.",
-                    new Exception("This exception and stack trace is for debugging purposes")
-                ),
-                ctx
+                    () -> logger.error(
+                            "The last response chunk has already been sent. This method should not have been called. Ignoring this method call.",
+                            new Exception("This exception and stack trace is for debugging purposes")
+                    ),
+                    ctx
             ).run();
             return;
         }
@@ -184,8 +156,8 @@ public class ResponseSender {
             if (msg == null || !(msg instanceof OutboundMessageSendHeadersChunkFromResponseInfo)) {
                 String msgClass = (msg == null) ? "null" : msg.getClass().getName();
                 throw new IllegalStateException(
-                    "Expected the first chunk of the response's message to be a "
-                    + "OutboundMessageSendHeadersChunkFromResponseInfo, instead received: " + msgClass);
+                        "Expected the first chunk of the response's message to be a "
+                                + "OutboundMessageSendHeadersChunkFromResponseInfo, instead received: " + msgClass);
             }
 
             sendFirstChunk(ctx, requestInfo, responseInfo, null);
@@ -195,66 +167,41 @@ public class ResponseSender {
             if (msg == null || !(msg instanceof OutboundMessageSendContentChunk)) {
                 String msgClass = (msg == null) ? "null" : msg.getClass().getName();
                 throw new IllegalStateException(
-                    "Expected a chunk of the response's message (after the first) to be a "
-                    + "OutboundMessageSendContentChunk, instead received: " + msgClass);
+                        "Expected a chunk of the response's message (after the first) to be a "
+                                + "OutboundMessageSendContentChunk, instead received: " + msgClass);
             }
 
             writeChunk(
-                ctx, ((OutboundMessageSendContentChunk) msg).contentChunk, requestInfo, responseInfo,
-                ChannelAttributes.getHttpProcessingStateForChannel(ctx).get()
+                    ctx, ((OutboundMessageSendContentChunk) msg).contentChunk, requestInfo, responseInfo,
+                    ChannelAttributes.getHttpProcessingStateForChannel(ctx).get()
             );
         }
 
         ctx.flush();
     }
 
-    /**
-     * Outputs the given *full* responseInfo to the user via the given ctx argument. This method only works on full
-     * responses (where {@link ResponseInfo#isChunkedResponse()} is false). If the response's {@link
-     * ResponseInfo#getContentForFullResponse()} is not null then the given serializer will be used to convert the
-     * content to a string (the {@link #defaultResponseContentSerializer} will be used if the given serializer is
-     * null).
-     * <p/>
-     * The given requestInfo argument is used to help determine the Trace ID that should be output to the user in the
-     * headers as well as to determine if the user wants the connection kept alive. Once the response is successfully
-     * sent, this method sets the channel state's {@link
-     * HttpProcessingState#setResponseWriterFinalChunkChannelFuture(ChannelFuture)}
-     * to the result of the {@link ChannelHandlerContext#write(Object)} call to indicate that the response was sent for
-     * handlers further down the chain and to allow them to attach listeners that are fired when the response is fully
-     * sent. {@link ResponseInfo#isResponseSendingStarted()} and {@link ResponseInfo#isResponseSendingLastChunkSent()}
-     * will also be set to true (assuming this call is successful).
-     * <p/>
-     * This will throw an {@link IllegalArgumentException} if {@link ResponseInfo#isChunkedResponse()} is true (since
-     * this method is only for full responses). It will log an error and do nothing if the the response has already been
-     * sent.
-     */
-    public void sendFullResponse(
-        ChannelHandlerContext ctx, RequestInfo<?> requestInfo, ResponseInfo<?> responseInfo, ObjectMapper serializer
-    ) throws JsonProcessingException {
-
+    @Override
+    public void sendFullResponse(ChannelHandlerContext ctx, RequestInfo requestInfo, ResponseInfo<?> responseInfo) throws JsonParseException {
         if (responseInfo.isChunkedResponse()) {
             throw new IllegalArgumentException(
-                "sendFullResponse() should only be passed a ResponseInfo where ResponseInfo.isChunkedResponse() is "
-                + "false. This time it was passed one where isChunkedResponse() was true, indicating a chunked "
-                + "(not full) response.");
+                    "sendFullResponse() should only be passed a ResponseInfo where ResponseInfo.isChunkedResponse() is "
+                            + "false. This time it was passed one where isChunkedResponse() was true, indicating a chunked "
+                            + "(not full) response.");
         }
 
         if (responseInfo.isResponseSendingLastChunkSent()) {
             runnableWithTracingAndMdc(
-                () -> logger.error(
-                    "The last response chunk has already been sent. This method should not have been called. Ignoring "
-                    + "this method call.", new Exception("This exception and stack trace is for debugging purposes")
-                ),
-                ctx
+                    () -> logger.error(
+                            "The last response chunk has already been sent. This method should not have been called. Ignoring "
+                                    + "this method call.", new Exception("This exception and stack trace is for debugging purposes")
+                    ),
+                    ctx
             ).run();
             return;
         }
 
-        if (serializer == null)
-            serializer = defaultResponseContentSerializer;
-
         // There is only one chunk representing the full request, so send it.
-        sendFirstChunk(ctx, requestInfo, responseInfo, serializer);
+        sendFirstChunk(ctx, requestInfo, responseInfo, defaultResponseContentSerializer);
 
         ctx.flush();
     }
@@ -268,8 +215,9 @@ public class ResponseSender {
 
         // Set the actual response object on the state before sending it through the outbound pipeline
         HttpProcessingState state = ChannelAttributes.getHttpProcessingStateForChannel(ctx).get();
-        if (state != null)
+        if (state != null) {
             state.setActualResponseObject(actualResponseObject);
+        }
 
         writeChunk(ctx, actualResponseObject, requestInfo, responseInfo, state);
     }
@@ -278,7 +226,7 @@ public class ResponseSender {
                                                                    ObjectMapper serializer, ChannelHandlerContext ctx) {
         HttpResponse actualResponseObject;
         HttpResponseStatus httpStatus =
-            HttpResponseStatus.valueOf(responseInfo.getHttpStatusCodeWithDefault(DEFAULT_HTTP_STATUS_CODE));
+                HttpResponseStatus.valueOf(responseInfo.getHttpStatusCodeWithDefault(DEFAULT_HTTP_STATUS_CODE));
         determineAndSetCharsetAndMimeTypeForResponseInfoIfNecessary(responseInfo);
         if (responseInfo.isChunkedResponse()) {
             // Chunked response. No content (yet).
@@ -295,12 +243,13 @@ public class ResponseSender {
                 //      using the provided serializer.
                 Object content = responseInfo.getContentForFullResponse();
                 ByteBuf bytesForResponse;
-                if (content instanceof byte[])
+                if (content instanceof byte[]) {
                     bytesForResponse = Unpooled.wrappedBuffer((byte[]) content);
+                }
                 else {
                     bytesForResponse = Unpooled.copiedBuffer(
-                        serializeOutput(responseInfo.getContentForFullResponse(), serializer, responseInfo, ctx),
-                        responseInfo.getDesiredContentWriterEncoding());
+                            serializeOutput(responseInfo.getContentForFullResponse(), serializer, responseInfo, ctx),
+                            responseInfo.getDesiredContentWriterEncoding());
                 }
                 // Turn the serialized string to bytes for the response content, create the full response with content,
                 //      and set the content type header.
@@ -325,8 +274,9 @@ public class ResponseSender {
         responseInfo.getHeaders().set(CONTENT_TYPE, buildContentTypeHeader(responseInfo));
 
         // Set the HTTP status code on the ResponseInfo object from the actualResponseObject if necessary.
-        if (responseInfo.getHttpStatusCode() == null)
+        if (responseInfo.getHttpStatusCode() == null) {
             responseInfo.setHttpStatusCode(actualResponseObject.getStatus().code());
+        }
 
         // Make sure a trace ID is in the headers.
         if (!responseInfo.getHeaders().contains(TraceHeaders.TRACE_ID)) {
@@ -338,9 +288,9 @@ public class ResponseSender {
                 //      someone searches for that ID they'll find something explaining what happened.
                 traceId = TraceAndSpanIdGenerator.generateId();
                 String warningMsg =
-                    "Generating a dummy Trace ID for response header because a real Trace ID did not exist. This "
-                    + "probably happened because the request was not processed by the channel pipeline. dummy_trace_id="
-                    + traceId;
+                        "Generating a dummy Trace ID for response header because a real Trace ID did not exist. This "
+                                + "probably happened because the request was not processed by the channel pipeline. dummy_trace_id="
+                                + traceId;
                 runnableWithTracingAndMdc(() -> logger.warn(warningMsg), ctx).run();
             }
             responseInfo.getHeaders().set(TraceHeaders.TRACE_ID, traceId);
@@ -356,7 +306,7 @@ public class ResponseSender {
             //      what the content length will be.
             if (actualResponseObject instanceof LastHttpContent) {
                 responseInfo.getHeaders().set(
-                    CONTENT_LENGTH, ((LastHttpContent) actualResponseObject).content().readableBytes()
+                        CONTENT_LENGTH, ((LastHttpContent) actualResponseObject).content().readableBytes()
                 );
             }
             else {
@@ -389,9 +339,9 @@ public class ResponseSender {
 
         // Add cookies (if any)
         if (responseInfo.getCookies() != null) {
-            for (Cookie cookie : responseInfo.getCookies()) {
+            for (io.netty.handler.codec.http.cookie.Cookie cookie : responseInfo.getCookies()) {
                 actualResponseObject.headers().add(
-                    HttpHeaders.Names.SET_COOKIE, ServerCookieEncoder.LAX.encode(cookie.name(), cookie.value())
+                        HttpHeaders.Names.SET_COOKIE, io.netty.handler.codec.http.cookie.ServerCookieEncoder.LAX.encode(cookie.name(), cookie.value())
                 );
             }
         }
@@ -400,7 +350,7 @@ public class ResponseSender {
     /**
      * Copied from {@link io.netty.handler.codec.http.HttpObjectDecoder#isContentAlwaysEmpty(HttpMessage)} in Netty
      * version 4.0.36-Final.
-     *
+     * <p>
      * <p>See <a href="http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html">RFC 2616 Section 4.4</a> and <a
      * href="https://github.com/netty/netty/issues/222">Netty Issue 222</a> for details on why this logic is necessary.
      *
@@ -419,7 +369,7 @@ public class ResponseSender {
         if (code >= 100 && code < 200) {
             // One exception: Hixie 76 websocket handshake response
             return !(code == 101 && !res.getHeaders().contains(HttpHeaders.Names.SEC_WEBSOCKET_ACCEPT)
-                     && res.getHeaders().contains(HttpHeaders.Names.UPGRADE, HttpHeaders.Values.WEBSOCKET, true));
+                    && res.getHeaders().contains(HttpHeaders.Names.UPGRADE, HttpHeaders.Values.WEBSOCKET, true));
         }
 
         switch (code) {
@@ -436,11 +386,12 @@ public class ResponseSender {
         if (logger.isDebugEnabled()) {
             StringBuilder headers = new StringBuilder();
             for (String headerName : response.headers().names()) {
-                if (headers.length() > 0)
+                if (headers.length() > 0) {
                     headers.append(", ");
+                }
 
                 headers.append(headerName).append("=\"")
-                       .append(String.join(",", response.headers().getAll(headerName))).append("\"");
+                        .append(String.join(",", response.headers().getAll(headerName))).append("\"");
             }
 
             StringBuilder sb = new StringBuilder();
@@ -451,7 +402,7 @@ public class ResponseSender {
             if (response instanceof HttpContent) {
                 HttpContent chunk = (HttpContent) response;
                 sb.append("\n\tCONTENT CHUNK: ").append(chunk.getClass().getName()).append(", size: ")
-                  .append(chunk.content().readableBytes());
+                        .append(chunk.content().readableBytes());
             }
             runnableWithTracingAndMdc(() -> logger.debug(sb.toString()), ctx).run();
         }
@@ -460,10 +411,10 @@ public class ResponseSender {
     protected void logResponseContentChunk(HttpContent chunk, ChannelHandlerContext ctx) {
         if (logger.isDebugEnabled()) {
             runnableWithTracingAndMdc(
-                () -> logger.debug("SENDING RESPONSE CHUNK: " + chunk.getClass().getName() + ", size: "
-                                   + chunk.content().readableBytes()
-                ),
-                ctx
+                    () -> logger.debug("SENDING RESPONSE CHUNK: " + chunk.getClass().getName() + ", size: "
+                            + chunk.content().readableBytes()
+                    ),
+                    ctx
             ).run();
         }
     }
@@ -481,7 +432,7 @@ public class ResponseSender {
             ByteBuf actualContent = ((HttpContent) chunkToWrite).content();
             if (actualContent != null) {
                 long newUncompressedRawContentLengthValue =
-                    responseInfo.getUncompressedRawContentLength() + actualContent.readableBytes();
+                        responseInfo.getUncompressedRawContentLength() + actualContent.readableBytes();
                 responseInfo.setUncompressedRawContentLength(newUncompressedRawContentLengthValue);
             }
         }
@@ -492,8 +443,9 @@ public class ResponseSender {
         boolean isLastChunk = chunkToWrite instanceof LastHttpContent;
         if (state != null) {
             // Update the ResponseInfo to indicate that the response sending has been started if this is the first chunk
-            if (chunkToWrite instanceof HttpResponse)
+            if (chunkToWrite instanceof HttpResponse) {
                 responseInfo.setResponseSendingStarted(true);
+            }
 
             // Update ResponseInfo to indicate that the last chunk has been sent if this is the last chunk.
             if (isLastChunk) {
@@ -501,12 +453,15 @@ public class ResponseSender {
             }
         }
 
-        if (chunkToWrite instanceof HttpResponse)
+        if (chunkToWrite instanceof HttpResponse) {
             logResponseFirstChunk((HttpResponse) chunkToWrite, ctx);
-        else if (chunkToWrite instanceof HttpContent)
+        }
+        else if (chunkToWrite instanceof HttpContent) {
             logResponseContentChunk((HttpContent) chunkToWrite, ctx);
-        else
+        }
+        else {
             throw new IllegalStateException("What is this?: " + chunkToWrite.getClass().getName());
+        }
 
         // Write the response, which will send it through the outbound pipeline
         //      (where it might be modified by outbound handlers).
@@ -529,26 +484,13 @@ public class ResponseSender {
         //      (2) this is a force-close situation
         //      Any other situation should be a close-only-on-failure.
         if (isLastChunk
-            && (!requestInfo.isKeepAliveRequested() || responseInfo.isForceConnectionCloseAfterResponseSent())
-        ) {
+                && (!requestInfo.isKeepAliveRequested() || responseInfo.isForceConnectionCloseAfterResponseSent())
+                ) {
             writeFuture.addListener(ChannelFutureListener.CLOSE);
         }
-        else
+        else {
             writeFuture.addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
-    }
-
-    /**
-     * Helper method that just calls {@link #sendFullResponse(io.netty.channel.ChannelHandlerContext, RequestInfo,
-     * ResponseInfo, ObjectMapper)} and passes in the {@link #defaultResponseContentSerializer} as the response
-     * serializer. This method only supports full responses (see the javadocs of {@link
-     * #sendFullResponse(ChannelHandlerContext, RequestInfo, ResponseInfo, ObjectMapper)} for more details of the
-     * requirements for calling this method).
-     */
-    @SuppressWarnings("unused")
-    public void sendFullResponse(
-        ChannelHandlerContext ctx, RequestInfo requestInfo, ResponseInfo<?> responseInfo
-    ) throws JsonProcessingException {
-        sendFullResponse(ctx, requestInfo, responseInfo, defaultResponseContentSerializer);
+        }
     }
 
     /**
@@ -556,7 +498,7 @@ public class ResponseSender {
      * {@link ErrorResponseBody} found in the {@link ResponseInfo#getContentForFullResponse()} with the String result of
      * calling {@link ErrorResponseBodySerializer#serializeErrorResponseBodyToString(ErrorResponseBody)} on {@link
      * #errorResponseBodySerializer}. The modified {@link ResponseInfo} is then sent to {@link
-     * #sendFullResponse(io.netty.channel.ChannelHandlerContext, RequestInfo, ResponseInfo, ObjectMapper)} for passing
+     * #sendFullResponse(io.netty.channel.ChannelHandlerContext, RequestInfo, ResponseInfo)} for passing
      * back to the client.
      * <p/>
      * NOTE: This assumes a full (not chunked) response, and uses {@link ResponseInfo#getContentForFullResponse()} to
@@ -564,13 +506,14 @@ public class ResponseSender {
      * IllegalArgumentException} if you pass in a response object that returns true for {@link
      * ResponseInfo#isChunkedResponse()}.
      */
+    @Override
     public void sendErrorResponse(ChannelHandlerContext ctx,
                                   RequestInfo requestInfo,
                                   ResponseInfo<ErrorResponseBody> responseInfo) throws JsonProcessingException {
 
         if (responseInfo.isChunkedResponse()) {
             throw new IllegalArgumentException("The responseInfo argument is marked as being a chunked response, but "
-                                               + "sendErrorResponse(...) only works with full responses");
+                    + "sendErrorResponse(...) only works with full responses");
         }
 
         responseInfo.getHeaders().set("error_uid", responseInfo.getContentForFullResponse().errorId());
@@ -583,21 +526,22 @@ public class ResponseSender {
             ((ResponseInfo) responseInfo).setContentForFullResponse(errorBodyAsString);
         }
 
-        sendFullResponse(ctx, requestInfo, responseInfo, defaultResponseContentSerializer);
+        sendFullResponse(ctx, requestInfo, responseInfo);
     }
 
     protected String extractDistributedTraceId(RequestInfo requestInfo, ChannelHandlerContext ctx) {
         String traceId = (requestInfo == null) ? null : requestInfo.getHeaders().get(TraceHeaders.TRACE_ID);
         if (traceId == null) {
             traceId = supplierWithTracingAndMdc(
-                () -> {
-                    Span currentSpanFromTracer = Tracer.getInstance().getCurrentSpan();
-                    if (currentSpanFromTracer != null)
-                        return currentSpanFromTracer.getTraceId();
+                    () -> {
+                        Span currentSpanFromTracer = Tracer.getInstance().getCurrentSpan();
+                        if (currentSpanFromTracer != null) {
+                            return currentSpanFromTracer.getTraceId();
+                        }
 
-                    return null;
-                },
-                ctx
+                        return null;
+                    },
+                    ctx
             ).get();
         }
 
@@ -623,9 +567,9 @@ public class ResponseSender {
         //      that, otherwise attempt to extract it from the response headers, and use
         //      ResponseInfo.DEFAULT_CONTENT_ENCODING as the "nobody has an opinion" default.
         return (responseInfo.getDesiredContentWriterEncoding() == null)
-               ? HttpUtils
-                   .determineCharsetFromContentType(responseInfo.getHeaders(), ResponseInfo.DEFAULT_CONTENT_ENCODING)
-               : responseInfo.getDesiredContentWriterEncoding();
+                ? HttpUtils
+                .determineCharsetFromContentType(responseInfo.getHeaders(), ResponseInfo.DEFAULT_CONTENT_ENCODING)
+                : responseInfo.getDesiredContentWriterEncoding();
     }
 
     protected String determineMimeTypeToUse(ResponseInfo<?> responseInfo) {
@@ -633,32 +577,37 @@ public class ResponseSender {
         //      that, otherwise attempt to extract it from the response headers, and use
         //      ResponseInfo.DEFAULT_MIME_TYPE as the "nobody has an opinion" default.
         return (responseInfo.getDesiredContentWriterMimeType() == null)
-               ? extractMimeTypeFromContentTypeHeader(responseInfo.getHeaders(), ResponseInfo.DEFAULT_MIME_TYPE)
-               : responseInfo.getDesiredContentWriterMimeType();
+                ? extractMimeTypeFromContentTypeHeader(responseInfo.getHeaders(), ResponseInfo.DEFAULT_MIME_TYPE)
+                : responseInfo.getDesiredContentWriterMimeType();
     }
 
     protected String extractMimeTypeFromContentTypeHeader(HttpHeaders headers, String def) {
-        if (headers == null)
+        if (headers == null) {
             return def;
+        }
 
         String contentTypeHeader = headers.get(HttpHeaders.Names.CONTENT_TYPE);
-        if (contentTypeHeader == null || contentTypeHeader.trim().length() == 0)
+        if (contentTypeHeader == null || contentTypeHeader.trim().length() == 0) {
             return def;
+        }
 
-        if (contentTypeHeader.contains(";"))
+        if (contentTypeHeader.contains(";")) {
             contentTypeHeader = contentTypeHeader.substring(0, contentTypeHeader.indexOf(";"));
+        }
 
         return contentTypeHeader.trim();
     }
 
     protected String buildContentTypeHeader(ResponseInfo<?> responseInfo) {
-        if (responseInfo.getDesiredContentWriterEncoding() == null)
+        if (responseInfo.getDesiredContentWriterEncoding() == null) {
             throw new IllegalArgumentException("responseInfo.getDesiredContentWriterEncoding() cannot be null");
+        }
 
-        if (responseInfo.getDesiredContentWriterMimeType() == null)
+        if (responseInfo.getDesiredContentWriterMimeType() == null) {
             throw new IllegalArgumentException("responseInfo.getDesiredContentWriterMimeType() cannot be null");
+        }
 
         return responseInfo.getDesiredContentWriterMimeType() + "; charset="
-               + responseInfo.getDesiredContentWriterEncoding().name();
+                + responseInfo.getDesiredContentWriterEncoding().name();
     }
 }

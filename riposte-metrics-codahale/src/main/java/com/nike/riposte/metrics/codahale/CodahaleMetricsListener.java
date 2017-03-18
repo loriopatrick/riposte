@@ -277,7 +277,7 @@ public class CodahaleMetricsListener implements MetricsListener {
                 requestTimer(requestInfo.getMethod()).update(elapsedTimeMillis, TimeUnit.MILLISECONDS);
 
                 final int responseHttpStatusCode =
-                    responseInfo.getHttpStatusCodeWithDefault(ResponseSender.DEFAULT_HTTP_STATUS_CODE);
+                    responseInfo.getHttpStatusCodeWithDefault(HttpResponseStatus.OK.code());
                 Endpoint<?> endpoint = httpState.getEndpointForExecution();
                 final boolean is500RoutingError = responseHttpStatusCode >= 500 && endpoint == null;
                 final boolean is405MethodNotAllowed =

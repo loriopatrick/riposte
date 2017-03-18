@@ -116,7 +116,7 @@ public class ResponseSenderHandlerTest {
     }
 
     @Test
-    public void sendResponse_calls_responseSender_sendResponse_for_non_error_content() throws JsonProcessingException {
+    public void sendResponse_calls_responseSender_sendResponse_for_non_error_content() throws Exception {
         // given
         RequestInfo<?> requestInfo = RequestInfoImpl.dummyInstanceForUnknownRequests();
         doReturn(requestInfo).when(stateMock).getRequestInfo();
@@ -126,11 +126,11 @@ public class ResponseSenderHandlerTest {
         handlerSpy.sendResponse(ctxMock, null);
 
         // then
-        verify(responseSenderMock).sendFullResponse(ctxMock, requestInfo, responseInfo, customSerializerMock);
+        verify(responseSenderMock).sendFullResponse(ctxMock, requestInfo, responseInfo);
     }
 
     @Test
-    public void sendResponse_calls_responseSender_sendResponse_for_null_content() throws JsonProcessingException {
+    public void sendResponse_calls_responseSender_sendResponse_for_null_content() throws Exception {
         // given
         RequestInfo<?> requestInfo = RequestInfoImpl.dummyInstanceForUnknownRequests();
         doReturn(requestInfo).when(stateMock).getRequestInfo();
@@ -140,11 +140,11 @@ public class ResponseSenderHandlerTest {
         handlerSpy.sendResponse(ctxMock, null);
 
         // then
-        verify(responseSenderMock).sendFullResponse(ctxMock, requestInfo, responseInfo, customSerializerMock);
+        verify(responseSenderMock).sendFullResponse(ctxMock, requestInfo, responseInfo);
     }
 
     @Test
-    public void sendResponse_uses_dummy_RequestInfo_if_state_is_missing_requestInfo() throws JsonProcessingException {
+    public void sendResponse_uses_dummy_RequestInfo_if_state_is_missing_requestInfo() throws Exception {
         // given
         doReturn(null).when(stateMock).getRequestInfo();
 
@@ -153,13 +153,13 @@ public class ResponseSenderHandlerTest {
 
         // then
         ArgumentCaptor<RequestInfo> requestInfoArgumentCaptor = ArgumentCaptor.forClass(RequestInfo.class);
-        verify(responseSenderMock).sendFullResponse(eq(ctxMock), requestInfoArgumentCaptor.capture(), eq(responseInfo), eq(customSerializerMock));
+        verify(responseSenderMock).sendFullResponse(eq(ctxMock), requestInfoArgumentCaptor.capture(), eq(responseInfo));
         RequestInfo requestInfoUsed = requestInfoArgumentCaptor.getValue();
         assertThat(requestInfoUsed.getUri()).isEqualTo(RequestInfo.NONE_OR_UNKNOWN_TAG);
     }
 
     @Test
-    public void sendResponse_passes_null_serializer_if_endpoint_has_no_custom_serializer() throws JsonProcessingException {
+    public void sendResponse_passes_null_serializer_if_endpoint_has_no_custom_serializer() throws Exception {
         // given
         RequestInfo<?> requestInfo = RequestInfoImpl.dummyInstanceForUnknownRequests();
         doReturn(requestInfo).when(stateMock).getRequestInfo();
@@ -169,11 +169,11 @@ public class ResponseSenderHandlerTest {
         handlerSpy.sendResponse(ctxMock, null);
 
         // then
-        verify(responseSenderMock).sendFullResponse(ctxMock, requestInfo, responseInfo, null);
+        verify(responseSenderMock).sendFullResponse(ctxMock, requestInfo, responseInfo);
     }
 
     @Test
-    public void sendResponse_passes_null_serializer_if_endpoint_is_null() throws JsonProcessingException {
+    public void sendResponse_passes_null_serializer_if_endpoint_is_null() throws Exception {
         // given
         RequestInfo<?> requestInfo = RequestInfoImpl.dummyInstanceForUnknownRequests();
         doReturn(requestInfo).when(stateMock).getRequestInfo();
@@ -183,11 +183,11 @@ public class ResponseSenderHandlerTest {
         handlerSpy.sendResponse(ctxMock, null);
 
         // then
-        verify(responseSenderMock).sendFullResponse(ctxMock, requestInfo, responseInfo, null);
+        verify(responseSenderMock).sendFullResponse(ctxMock, requestInfo, responseInfo);
     }
 
     @Test
-    public void sendResponse_calls_responseSender_sendErrorResponse_for_error_content() throws JsonProcessingException {
+    public void sendResponse_calls_responseSender_sendErrorResponse_for_error_content() throws Exception {
         // given
         RequestInfo<?> requestInfo = RequestInfoImpl.dummyInstanceForUnknownRequests();
         doReturn(requestInfo).when(stateMock).getRequestInfo();

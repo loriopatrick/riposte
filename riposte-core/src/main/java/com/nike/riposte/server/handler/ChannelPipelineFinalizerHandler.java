@@ -127,7 +127,7 @@ public class ChannelPipelineFinalizerHandler extends BaseInboundHandlerWithTraci
      * next request and will not send an error.
      */
     protected void finalizeChannelPipeline(ChannelHandlerContext ctx, Object msg, HttpProcessingState state,
-                                           Throwable cause) throws JsonProcessingException {
+                                           Throwable cause) throws Exception {
         RequestInfo<?> requestInfo = exceptionHandlingHandler.getRequestInfo(state, msg);
 
         // Send a generic error response to the client if no response has already been sent. NOTE: In the case of

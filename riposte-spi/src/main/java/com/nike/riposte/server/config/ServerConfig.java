@@ -1,5 +1,6 @@
 package com.nike.riposte.server.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nike.backstopper.apierror.ApiError;
 import com.nike.backstopper.apierror.projectspecificinfo.ProjectApiErrors;
 import com.nike.backstopper.apierror.projectspecificinfo.ProjectSpecificErrorCodeRange;
@@ -19,11 +20,16 @@ import com.nike.riposte.server.hooks.PreServerStartupHook;
 import com.nike.riposte.server.hooks.ServerShutdownHook;
 import com.nike.riposte.server.http.Endpoint;
 import com.nike.riposte.server.http.RequestInfo;
+import com.nike.riposte.server.http.ResponseSender;
 import com.nike.riposte.server.http.filter.RequestAndResponseFilter;
 import com.nike.riposte.server.logging.AccessLogger;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.SelfSignedCertificate;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-
+import javax.net.ssl.SSLException;
 import java.security.cert.CertificateException;
 import java.util.Collection;
 import java.util.List;
@@ -32,49 +38,41 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 
-import javax.net.ssl.SSLException;
-
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.socket.SocketChannel;
-import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslContextBuilder;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
-
 /**
  * Interface for providing the configuration options needed by a Riposte server. Reasonable defaults are provided where
  * possible.
- *
+ * <p>
  * <p><b>MINIMUM RECOMMENDED IMPLEMENTATION:</b> Although {@link #appEndpoints()} is the only method you are required to
  * implement, the following overrides are highly recommended as a "minimum" implementation for achieving good core
  * application functionality:
- *
+ * <p>
  * <ul>
- *     <li>
- *         {@link #riposteErrorHandler()} - Defines the error handler your application will use. The javadocs for this
- *         method explain how to set this up properly for your application.
- *     </li>
- *     <li>
- *         {@link #riposteUnhandledErrorHandler()} - Defines the unhandled error handler your application will use when
- *         {@link #riposteErrorHandler()} fails to handle an error. The javadocs for this method explain how to set this
- *         up properly for your application.
- *     </li>
- *     <li>
- *         {@link #requestContentValidationService()} - Defines the validation service your application will use to
- *         validate incoming request payloads. The javadocs for this method explain how to set this up properly for your
- *         application.
- *     </li>
- *     <li>
- *         {@link #appInfo()} - Defines some metadata about your application, necessary for some other features (e.g.
- *         metrics collection and reporting). The javadocs for this method explain how to set this up properly for your
- *         application.
- *     </li>
- *     <li>
- *         {@link #endpointsPort()}, {@link #endpointsSslPort()}, and/or {@link #isEndpointsUseSsl()} - These determine
- *         which port your application listens on and whether or not it accepts SSL traffic. If you change {@link
- *         #isEndpointsUseSsl()} to return true you will probably also want to override {@link #createSslContext()} so
- *         you're not using a self-signed SSL cert. The defaults for these methods may work as-is for your application.
- *         If so then you do not need to override them.
- *     </li>
+ * <li>
+ * {@link #riposteErrorHandler()} - Defines the error handler your application will use. The javadocs for this
+ * method explain how to set this up properly for your application.
+ * </li>
+ * <li>
+ * {@link #riposteUnhandledErrorHandler()} - Defines the unhandled error handler your application will use when
+ * {@link #riposteErrorHandler()} fails to handle an error. The javadocs for this method explain how to set this
+ * up properly for your application.
+ * </li>
+ * <li>
+ * {@link #requestContentValidationService()} - Defines the validation service your application will use to
+ * validate incoming request payloads. The javadocs for this method explain how to set this up properly for your
+ * application.
+ * </li>
+ * <li>
+ * {@link #appInfo()} - Defines some metadata about your application, necessary for some other features (e.g.
+ * metrics collection and reporting). The javadocs for this method explain how to set this up properly for your
+ * application.
+ * </li>
+ * <li>
+ * {@link #endpointsPort()}, {@link #endpointsSslPort()}, and/or {@link #isEndpointsUseSsl()} - These determine
+ * which port your application listens on and whether or not it accepts SSL traffic. If you change {@link
+ * #isEndpointsUseSsl()} to return true you will probably also want to override {@link #createSslContext()} so
+ * you're not using a self-signed SSL cert. The defaults for these methods may work as-is for your application.
+ * If so then you do not need to override them.
+ * </li>
  * </ul>
  *
  * @author Nic Munroe
@@ -102,7 +100,7 @@ public interface ServerConfig {
     /**
      * @return The error handler that should be used for this application for handling known errors. For things that
      * fall through the cracks they will be handled by {@link #riposteUnhandledErrorHandler()}.
-     *
+     * <p>
      * <p>NOTE: The default implementation returned if you don't override this method is a very basic Backstopper impl -
      * it will not know about your application's {@link ProjectApiErrors} and will instead create a dummy {@link
      * ProjectApiErrors} that only supports the {@link com.nike.backstopper.apierror.sample.SampleCoreApiError} values.
@@ -123,13 +121,13 @@ public interface ServerConfig {
             }
         };
         return BackstopperRiposteConfigHelper
-            .defaultErrorHandler(projectApiErrors, ApiExceptionHandlerUtils.DEFAULT_IMPL);
+                .defaultErrorHandler(projectApiErrors, ApiExceptionHandlerUtils.DEFAULT_IMPL);
     }
 
     /**
      * @return The error handler that should be used for this application for handling unknown/unexpected/unhandled
      * errors. Known/handled errors will be processed by {@link #riposteErrorHandler()}.
-     *
+     * <p>
      * <p>NOTE: The default implementation returned if you don't override this method is a very basic Backstopper impl -
      * it will not know about your application's {@link ProjectApiErrors} and will instead create a dummy {@link
      * ProjectApiErrors} that only supports the {@link com.nike.backstopper.apierror.sample.SampleCoreApiError} values.
@@ -150,7 +148,7 @@ public interface ServerConfig {
             }
         };
         return BackstopperRiposteConfigHelper
-            .defaultUnhandledErrorHandler(projectApiErrors, ApiExceptionHandlerUtils.DEFAULT_IMPL);
+                .defaultUnhandledErrorHandler(projectApiErrors, ApiExceptionHandlerUtils.DEFAULT_IMPL);
     }
 
     /**
@@ -165,11 +163,8 @@ public interface ServerConfig {
 
     /**
      * @return A new self-signed SSL certificate.
-     *
-     * @throws SSLException
-     *     if there is a problem creating the {@link SslContext}.
-     * @throws CertificateException
-     *     if there is a problem creating the certificate used by {@link SslContext}.
+     * @throws SSLException         if there is a problem creating the {@link SslContext}.
+     * @throws CertificateException if there is a problem creating the certificate used by {@link SslContext}.
      */
     default SslContext createSslContext() throws SSLException, CertificateException {
         SelfSignedCertificate ssc = new SelfSignedCertificate("localhost");
@@ -208,6 +203,10 @@ public interface ServerConfig {
      * blank empty-constructor {@link ObjectMapper#ObjectMapper()} will be used.
      */
     default ObjectMapper defaultResponseContentSerializer() {
+        return null;
+    }
+
+    default ResponseSender defaultResponseSender() {
         return null;
     }
 
@@ -303,10 +302,10 @@ public interface ServerConfig {
      * proxy/router call) that is not done by the time the timeout has passed. This can become necessary if the
      * completable future returned by a non-blocking endpoint is constructed in such a way that it never completes.
      * Having this timeout that cancels rogue completable futures can help prevent memory leaks.
-     *
+     * <p>
      * <p>As mentioned this value is also used in a similar way for the async downstream calls performed by proxy
      * routing endpoints to make sure they don't hang forever.
-     *
+     * <p>
      * <p>NOTE: This is just for timing out active requests. If you're looking for timing out idle channels between
      * requests you'll want to adjust {@link #workerChannelIdleTimeoutMillis()} instead.
      */
@@ -322,13 +321,13 @@ public interface ServerConfig {
      * feature will be disabled and channels will not be closed due to idleness. If you're looking for active request
      * timeouts then you'll want to adjust {@link #defaultCompletableFutureTimeoutInMillisForNonblockingEndpoints()}
      * instead.
-     *
+     * <p>
      * <p><b>WARNING:</b> turning this feature off is very dangerous because keep-alive connections can potentially stay
      * alive forever. Each connection takes up memory to keep track of the open socket, leading to an out-of-memory type
      * situation if enough clients open keep-alive connections and don't ever close them - something that could easily
      * happen with connection pooling and enough clients. So this should only ever be set to 0 if you *really really*
      * know what you're doing.
-     *
+     * <p>
      * <p><b>NOTE:</b> This idle timeout only comes into affect between requests, so it will not interfere or conflict
      * with {@link #defaultCompletableFutureTimeoutInMillisForNonblockingEndpoints()}. i.e. Even if an endpoint takes
      * ten times this value to complete it will not be closed due to this idle channel timeout value (since the request
@@ -354,7 +353,7 @@ public interface ServerConfig {
      * further chunks from the caller being received, then a {@link
      * com.nike.riposte.server.error.exception.IncompleteHttpCallTimeoutException} will be thrown and an appropriate
      * error response returned to the caller.
-     *
+     * <p>
      * <p>If this method returns a value less than or equal to 0 then the incomplete call timeout functionality will
      * be disabled. Be careful with turning this feature off - broken clients or attackers could effectively cause a
      * memory leak by flooding a server with invalid HTTP requests that never complete while keeping the connection
@@ -372,11 +371,11 @@ public interface ServerConfig {
      * Each socket takes up memory in the OS and the JVM, so if the number of open sockets grows too large it can cause
      * garbage collection thrashing or out-of-memory errors in the JVM, or OS-related problems including but not
      * necessarily limited to the OS killing the JVM process to reclaim memory.
-     *
+     * <p>
      * <p>If the server detects that the number of open channels is at this threshold then new incoming channels will
      * cause a {@link com.nike.riposte.server.error.exception.TooManyOpenChannelsException} to be thrown at which point
      * the server will respond to the client with a HTTP status 503 and close the new channel.
-     *
+     * <p>
      * <p>If you see {@link com.nike.riposte.server.error.exception.TooManyOpenChannelsException}s in your server logs
      * and discover that the traffic is legitimate, and the machine you're running on has the memory to handle the extra
      * open connections, then you can safely increase this number. If you're running on a machine without enough memory
@@ -390,10 +389,10 @@ public interface ServerConfig {
     /**
      * @return The maximum allowed request size in bytes. If netty receives a request larger than this then it will
      * throw a {@link io.netty.handler.codec.TooLongFrameException}.
-     *
+     * <p>
      * This value is an integer, so the max you can set it to is {@link Integer#MAX_VALUE}, which corresponds to 2^31-1,
      * or 2147483647 (around 2 GB).
-     *
+     * <p>
      * A value of 0 or less is disabling the max request size validation. Defaulting to no limit.
      */
     default int maxRequestSizeInBytes() {
@@ -406,7 +405,7 @@ public interface ServerConfig {
      * or anything else that shouldn't be done on the Netty worker thread. This can be null - if it is null then {@link
      * Executors#newCachedThreadPool()} will be used, which dynamically grows to fulfill demand,
      * reuses threads where possible, and kills threads that have been idle for 60 seconds.
-     *
+     * <p>
      * <p><b>NOTE:</b> You should try to find a non-blocking solution that uses fixed thread pools rather than use this
      * executor. For example you can use the {@code riposte-async-http-client} (or other async HTTP clients that don't
      * increase thread pool sizes under load) for asynchronous downstream calls that return futures rather than blocking
@@ -438,15 +437,15 @@ public interface ServerConfig {
      * @return A {@link CompletableFuture} that will eventually return the {@link AppInfo} that should be used to do
      * metrics (and anything else that requires this info). You can return null, or the {@link CompletableFuture} can
      * return null, although some features may fail if you do (e.g. metrics registration).
-     *
+     * <p>
      * <p>NOTE: Some of this info may come from outside sources and need to be retrieved (e.g. AWS metadata) which is
      * why it's a {@link CompletableFuture}, but if you know at app startup what everything should be you can just
      * return an already-completed {@link CompletableFuture} that contains the correct {@link AppInfo}.
-     *
+     * <p>
      * <p><b>See the {@code AwsUtil.getAppInfoFutureWithAwsInfo(...)} methods from the {@code riposte-async-http-client}
      * library module for the easy way to return a {@link CompletableFuture} that gets the non-local values from
      * AWS.</b>
-     *
+     * <p>
      * <p><b>See {@link com.nike.riposte.server.config.impl.AppInfoImpl} for a base implementation and helper methods
      * for creating "local" instances of the {@link AppInfo} interface if you're never going to be deployed in a cloud
      * environment.</b>

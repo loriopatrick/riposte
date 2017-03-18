@@ -20,6 +20,7 @@ import com.codahale.metrics.Timer;
 import com.tngtech.java.junit.dataprovider.DataProvider;
 import com.tngtech.java.junit.dataprovider.DataProviderRunner;
 
+import io.netty.handler.codec.http.HttpResponseStatus;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -444,7 +445,7 @@ public class CodahaleMetricsListenerTest {
         state.setEndpointForExecution(endpoint);
         String endpointTimerAndMeterKey = listener.getTimerAndMeterMapKeyForEndpoint(endpoint);
 
-        doReturn(responseStatusCode).when(responseInfoMock).getHttpStatusCodeWithDefault(ResponseSender.DEFAULT_HTTP_STATUS_CODE);
+        doReturn(responseStatusCode).when(responseInfoMock).getHttpStatusCodeWithDefault(HttpResponseStatus.OK.code());
 
         int requestRawContentLengthBytes = (int)(Math.random() * 10000);
         doReturn(requestRawContentLengthBytes).when(requestInfoMock).getRawContentLengthInBytes();
@@ -535,7 +536,7 @@ public class CodahaleMetricsListenerTest {
         // given
         ServerMetricsEvent event = ServerMetricsEvent.RESPONSE_SENT;
         state.setEndpointForExecution(null);
-        doReturn(responseStatusCode).when(responseInfoMock).getHttpStatusCodeWithDefault(ResponseSender.DEFAULT_HTTP_STATUS_CODE);
+        doReturn(responseStatusCode).when(responseInfoMock).getHttpStatusCodeWithDefault(HttpResponseStatus.OK.code());
 
         String expectedTimerKey;
         switch(responseStatusCode) {

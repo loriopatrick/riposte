@@ -7,6 +7,7 @@ import com.nike.riposte.server.hooks.PreServerStartupHook;
 import com.nike.riposte.server.hooks.ServerShutdownHook;
 import com.nike.riposte.server.http.ResponseSender;
 
+import com.nike.riposte.server.http.StandardResponseSender;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -114,6 +115,10 @@ public class Server {
         eventLoopGroups.add(bossGroup);
         eventLoopGroups.add(workerGroup);
 
+        ResponseSender responseSender = (serverConfig.defaultResponseSender() == null)
+                ? new StandardResponseSender(serverConfig.defaultResponseContentSerializer(), serverConfig.errorResponseBodySerializer())
+                : serverConfig.defaultResponseSender();
+
         // Figure out which channel initializer should set up the channel pipelines for new channels.
         ChannelInitializer<SocketChannel> channelInitializer = serverConfig.customChannelInitializer();
         if (channelInitializer == null) {
@@ -124,9 +129,7 @@ public class Server {
                 serverConfig.longRunningTaskExecutor(), serverConfig.riposteErrorHandler(),
                 serverConfig.riposteUnhandledErrorHandler(),
                 serverConfig.requestContentValidationService(), serverConfig.defaultRequestContentDeserializer(),
-                new ResponseSender(
-                    serverConfig.defaultResponseContentSerializer(), serverConfig.errorResponseBodySerializer()
-                ),
+                responseSender,
                 serverConfig.metricsListener(),
                 serverConfig.defaultCompletableFutureTimeoutInMillisForNonblockingEndpoints(),
                 serverConfig.accessLogger(), serverConfig.pipelineCreateHooks(),
